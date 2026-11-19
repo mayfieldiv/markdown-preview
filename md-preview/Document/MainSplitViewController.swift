@@ -40,6 +40,7 @@ final class MainSplitViewController: NSSplitViewController {
 
     var onSelectFile: ((URL) -> Void)?
     var onOpenMarkdownLink: ((URL) -> Void)?
+    var onFragmentLink: ((String) -> Void)?
     private var sidebarCollapseObservation: NSKeyValueObservation?
     private var inspectorCollapseObservation: NSKeyValueObservation?
     var onLiveMetadataNeedsRefresh: (() -> Void)?
@@ -116,6 +117,9 @@ final class MainSplitViewController: NSSplitViewController {
         }
         contentViewController?.localMarkdownLinkActivated = { [weak self] url in
             self?.onOpenMarkdownLink?(url)
+        }
+        contentViewController?.fragmentLinkActivated = { [weak self] fragment in
+            self?.onFragmentLink?(fragment)
         }
     }
 
@@ -204,12 +208,20 @@ final class MainSplitViewController: NSSplitViewController {
         contentViewController?.scrollToAnchorWhenReady(fragment)
     }
 
-    func scrollToAnchor(_ fragment: String) {
-        contentViewController?.scrollToAnchor(fragment)
+    func scrollToAnchor(_ fragment: String, completion: ((Bool) -> Void)? = nil) {
+        guard let contentViewController else {
+            completion?(false)
+            return
+        }
+        contentViewController.scrollToAnchor(fragment, completion: completion)
     }
 
-    var previewScrollPosition: CGFloat {
-        contentViewController?.currentScrollPosition ?? 0
+    func scrollPreview(toHistoryPosition position: CGFloat) {
+        contentViewController?.scrollToHistoryPosition(position)
+    }
+
+    var previewHistoryScrollPosition: CGFloat {
+        contentViewController?.historyScrollPosition ?? 0
     }
 
     private var activeFindQuery = ""

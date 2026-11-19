@@ -65,6 +65,12 @@ extension DocumentWindowController {
             menuItem.title = isFavorite ? L("Remove from Favorites") : L("Add to Favorites")
             return projectRootURL != nil
         }
+        if menuItem.action == #selector(navigateBack(_:)) {
+            return !backHistory.isEmpty
+        }
+        if menuItem.action == #selector(navigateForward(_:)) {
+            return !forwardHistory.isEmpty
+        }
         if menuItem.action == #selector(toggleAlwaysOnTop(_:)) {
             menuItem.state = isAlwaysOnTop ? .on : .off
             menuItem.image = Self.alwaysOnTopMenuImage(isPinned: isAlwaysOnTop)

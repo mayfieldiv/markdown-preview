@@ -48,9 +48,12 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTo
         case failed
     }
 
+    /// A place the reader left: a different file, or another spot in the same
+    /// file after following an in-document link.
     struct HistoryEntry {
         let url: URL
-        /// Scroll offset when the user navigated away; restored on back/forward.
+        /// Scroll offset in CSS pixels when the user navigated away;
+        /// restored on back/forward.
         let scrollPosition: CGFloat
     }
 
@@ -59,6 +62,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTo
     var backHistory: [HistoryEntry] = []
     var forwardHistory: [HistoryEntry] = []
     weak var navigationItem: NSToolbarItemGroup?
+    private var mouseNavigationMonitor: Any?
     private var fileWatcher: FileWatcher?
     private let fullscreenToolbarTheme = FullscreenToolbarTheme()
     var isInspectorToggleSelected = false
@@ -245,7 +249,11 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTo
                 self?.present(url: url)
             }
         }
+        split.onFragmentLink = { [weak self] fragment in
+            self?.navigateToAnchor(fragment)
+        }
         documentWindow.contentViewController = split
+        installMouseNavigationMonitor()
         if let updates = appDelegate?.updaterController.model, updates.phase != .idle {
             split.installUpdatePill(updates)
         }
@@ -411,6 +419,10 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTo
         fileWatcher?.cancel()
         fileWatcher = nil
         themesPopoverEscapeMonitor.stop()
+        if let mouseNavigationMonitor {
+            NSEvent.removeMonitor(mouseNavigationMonitor)
+            self.mouseNavigationMonitor = nil
+        }
         stopAutoSaveTimer()
         autoSaveFeedbackResetWork?.cancel()
         autoSaveFeedbackResetWork = nil
@@ -579,8 +591,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTo
 
         let split = documentWindow.contentViewController as? MainSplitViewController
         guard currentFileURL?.standardizedFileURL != url.standardizedFileURL else {
-            // Link into the already-open document — just scroll.
-            if let fragment { split?.scrollToAnchor(fragment) }
+            if let fragment { navigateToAnchor(fragment) }
             return
         }
         let restoredScrollPosition = commitNavigation(to: url, intent: intent)
@@ -632,8 +643,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTo
         guard let currentFileURL else { return nil }
         let departed = HistoryEntry(
             url: currentFileURL.standardizedFileURL,
-            scrollPosition: (documentWindow.contentViewController as? MainSplitViewController)?
-                .previewScrollPosition ?? 0
+            scrollPosition: mainSplit?.previewHistoryScrollPosition ?? 0
         )
         defer { updateNavigationItem() }
         switch intent {
@@ -656,9 +666,85 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTo
         }
     }
 
+    /// Follows a link into the open document, recording where the reader was
+    /// so Back returns there. A target that is missing or already in place
+    /// records nothing: a Back that changes nothing on screen reads as broken.
+    func navigateToAnchor(_ fragment: String) {
+        guard let url = currentFileURL?.standardizedFileURL, let split = mainSplit else { return }
+        let departed = HistoryEntry(url: url, scrollPosition: split.previewHistoryScrollPosition)
+        split.scrollToAnchor(fragment) { [weak self] moved in
+            guard let self, moved, self.currentFileURL?.standardizedFileURL == url else { return }
+            Self.appendHistory(departed, to: &self.backHistory)
+            self.forwardHistory.removeAll()
+            self.updateNavigationItem()
+        }
+    }
+
+    // Not goBack:/goForward: — WKWebView implements those, and as first
+    // responder it would claim the menu items for its own (empty) history.
+    @objc func navigateBack(_ sender: Any?) { navigateHistory(.back) }
+    @objc func navigateForward(_ sender: Any?) { navigateHistory(.forward) }
+
+    func navigateHistory(_ intent: NavigationIntent) {
+        let target: HistoryEntry?
+        switch intent {
+        case .normal: return
+        case .back: target = backHistory.last
+        case .forward: target = forwardHistory.last
+        }
+        guard let target else { return }
+        guard target.url == currentFileURL?.standardizedFileURL else {
+            present(url: target.url, intent: intent)
+            return
+        }
+        // History offsets belong to the preview; the editor has its own
+        // geometry, so a same-document step has nothing to land on there.
+        guard !isEditing, !hasPendingEditorChanges else {
+            NSSound.beep()
+            return
+        }
+        guard let position = commitNavigation(to: target.url, intent: intent) else { return }
+        mainSplit?.scrollPreview(toHistoryPosition: position)
+    }
+
+    /// Side buttons on a mouse (buttons 4 and 5) step through history, as
+    /// in browsers. Both halves of the click are swallowed so the page never
+    /// sees a press without its release; the step happens on release.
+    private func installMouseNavigationMonitor() {
+        mouseNavigationMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.otherMouseDown, .otherMouseUp]
+        ) { [weak self] event in
+            let intent: NavigationIntent
+            switch event.buttonNumber {
+            case 3: intent = .back
+            case 4: intent = .forward
+            default: return event
+            }
+            let isRelease = event.type == .otherMouseUp
+            let handled = MainActor.assumeIsolated { () -> Bool in
+                guard let self, event.window === self.window else { return false }
+                if isRelease { self.navigateHistory(intent) }
+                return true
+            }
+            return handled ? nil : event
+        }
+    }
+
+    /// History entries name files by path; a rename would leave the open
+    /// document's own entries pointing at a file that no longer exists.
+    private func rewriteHistory(from oldURL: URL, to newURL: URL) {
+        let old = oldURL.standardizedFileURL
+        let new = newURL.standardizedFileURL
+        let rewrite = { (entry: HistoryEntry) in
+            entry.url == old ? HistoryEntry(url: new, scrollPosition: entry.scrollPosition) : entry
+        }
+        backHistory = backHistory.map(rewrite)
+        forwardHistory = forwardHistory.map(rewrite)
+    }
+
     private static func appendHistory(_ entry: HistoryEntry, to history: inout [HistoryEntry]) {
-        if history.last?.url == entry.url {
-            // Same document again — keep one entry with the latest scroll.
+        if let last = history.last, last.url == entry.url,
+           abs(last.scrollPosition - entry.scrollPosition) < 1 {
             history[history.count - 1] = entry
         } else {
             history.append(entry)
@@ -694,7 +780,8 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTo
     /// Open With list, sidebar selection, and inspector — without
     /// re-rendering the WebView, since the markdown content didn't change.
     func handleRename(to newURL: URL) {
-        guard currentFileURL != nil else { return }
+        guard let oldURL = currentFileURL else { return }
+        rewriteHistory(from: oldURL, to: newURL)
         currentFileURL = newURL
         markdownDocument?.replaceFileURL(newURL)
         documentWindow.title = ReleaseNotes.displayName(for: newURL)

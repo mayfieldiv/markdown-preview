@@ -1222,6 +1222,41 @@ final class MarkdownWebView: NSView, WKNavigationDelegate {
         }
     }
 
+    /// Where `scrollDocument(to: offset, topMargin:)` would land for a link
+    /// fragment, in CSS pixels, and whether that differs from the live
+    /// scroll position. Clamped by the page, which knows its viewport below
+    /// the toolbar's obscured inset; `scrollMetrics` does not.
+    func fragmentScrollTarget(
+        id: String,
+        topMargin: CGFloat,
+        completion: @escaping (_ target: (offset: CGFloat, landingCSS: CGFloat, moves: Bool)?) -> Void
+    ) {
+        let zoom = max(webView.pageZoom, 0.001)
+        let script = """
+        (() => {
+            const el = \(MarkdownHTML.fragmentTargetScript(id: id));
+            if (!el) return null;
+            const scrollY = window.scrollY || document.documentElement.scrollTop || 0;
+            const top = el.getBoundingClientRect().top + scrollY;
+            const scroller = document.scrollingElement || document.documentElement;
+            const maxY = Math.max(scroller.scrollHeight - window.innerHeight, 0);
+            const landing = Math.min(Math.max(top - \(topMargin / zoom), 0), maxY);
+            return { top, landing, moves: Math.abs(landing - scrollY) >= 1 };
+        })();
+        """
+        webView.evaluateJavaScript(script) { result, _ in
+            guard let raw = result as? [String: Any],
+                  let top = raw["top"] as? NSNumber,
+                  let landing = raw["landing"] as? NSNumber else {
+                completion(nil)
+                return
+            }
+            completion((offset: self.scaledDocumentOffset(CGFloat(truncating: top)),
+                        landingCSS: CGFloat(truncating: landing),
+                        moves: raw["moves"] as? Bool ?? true))
+        }
+    }
+
     private func highlightMatches(for query: String,
                                   backwards: Bool,
                                   mode: SearchMode,

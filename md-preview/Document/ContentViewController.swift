@@ -11,6 +11,7 @@ import WebKit
 /// fragment or a restored history scroll offset.
 enum NavigationScrollTarget {
     case anchor(String)
+    /// CSS pixels, independent of page zoom.
     case position(CGFloat)
 }
 
@@ -76,6 +77,7 @@ final class ContentViewController: NSViewController {
     var selectedTextDidChange: ((String?) -> Void)?
     var zoomDidChange: ((CGFloat) -> Void)?
     var localMarkdownLinkActivated: ((URL) -> Void)?
+    var fragmentLinkActivated: ((String) -> Void)?
     /// Fires once after a pending source scroll anchor (prepared via
     /// `prepareToRestoreSourceScrollAnchor`) has been applied to a fresh
     /// render. The edit-mode overlay uses it to hold its visibility swap until
@@ -116,7 +118,7 @@ final class ContentViewController: NSViewController {
                 .toggleTaskCheckbox(onLine: line, checked: checked)
         }
         webView.fragmentLinkActivated = { [weak self] fragment in
-            self?.scrollToElement(id: fragment)
+            self?.fragmentLinkActivated?(fragment)
         }
         webView.selectedTextDidChange = { [weak self] text in
             self?.selectedTextDidChange?(text)
@@ -781,6 +783,7 @@ final class ContentViewController: NSViewController {
     /// `nil` drops a stale target.
     func prepareToScrollAfterNavigation(to target: NavigationScrollTarget?) {
         pendingNavigationScrollTarget = target
+        programmaticScrollTarget = nil
         shouldApplyNavigationTargetOnHeight = false
         navigationTargetRetriesLeft = target == nil ? 0 : Self.navigationTargetMaxRetries
     }
@@ -794,8 +797,52 @@ final class ContentViewController: NSViewController {
     }
 
     /// Immediate fragment scroll within the already-rendered document.
-    func scrollToAnchor(_ fragment: String) {
-        scrollToElement(id: fragment)
+    /// `completion` is true when the target resolved and the viewport moves.
+    func scrollToAnchor(_ fragment: String, completion: ((Bool) -> Void)? = nil) {
+        webView.fragmentScrollTarget(id: fragment, topMargin: Self.anchorTopMargin) { [weak self] target in
+            guard let self, let target, target.moves else {
+                completion?(false)
+                return
+            }
+            self.webView.scrollDocument(to: target.offset, topMargin: Self.anchorTopMargin)
+            self.noteProgrammaticScroll(toCSS: target.landingCSS)
+            completion?(true)
+        }
+    }
+
+    private static let anchorTopMargin: CGFloat = 12
+
+    /// Where a scroll this controller started will end, in CSS pixels. The
+    /// page reports its position a frame or more behind, and a smooth scroll
+    /// reports every step, so a history step taken right after another one
+    /// would otherwise record a place the reader never stopped at.
+    private var programmaticScrollTarget: (css: CGFloat, expires: DispatchTime)?
+    private static let programmaticScrollSettleTime: DispatchTimeInterval = .milliseconds(500)
+
+    private func noteProgrammaticScroll(toCSS y: CGFloat) {
+        programmaticScrollTarget = (y, .now() + Self.programmaticScrollSettleTime)
+    }
+
+    /// The reader's position for back/forward history, in CSS pixels so a
+    /// zoom change between leaving and returning does not shift it.
+    var historyScrollPosition: CGFloat {
+        if case .position(let y)? = pendingNavigationScrollTarget { return y }
+        if let target = programmaticScrollTarget, DispatchTime.now() < target.expires {
+            return target.css
+        }
+        return webView.scrollMetrics.position / max(webView.pageZoom, 0.001)
+    }
+
+    /// Jumps to a back/forward history position (CSS pixels) in the current
+    /// document. A restore still waiting for the page to render is retargeted
+    /// rather than raced.
+    func scrollToHistoryPosition(_ y: CGFloat) {
+        if pendingNavigationScrollTarget != nil {
+            pendingNavigationScrollTarget = .position(y)
+            return
+        }
+        webView.scrollDocument(to: y * webView.pageZoom, topMargin: 0, duration: 0)
+        noteProgrammaticScroll(toCSS: y)
     }
 
     var currentScrollPosition: CGFloat {
@@ -819,7 +866,8 @@ final class ContentViewController: NSViewController {
                 self.pendingNavigationScrollTarget = nil
                 self.webView.scrollDocument(to: offset)
             }
-        case .position(let y):
+        case .position(let cssY):
+            let y = cssY * webView.pageZoom
             // Synced geometry can still be the blank page — hold out until
             // the offset is reachable, clamping only as a last resort.
             let metrics = webView.scrollMetrics
@@ -848,13 +896,6 @@ final class ContentViewController: NSViewController {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.navigationTargetRetryInterval) { [weak self] in
             guard let self, let target = self.pendingNavigationScrollTarget else { return }
             self.attemptNavigationScrollTarget(target)
-        }
-    }
-
-    private func scrollToElement(id: String) {
-        webView.elementOffset(id: id) { [weak self] offset in
-            guard let self, let offset else { return }
-            self.webView.scrollDocument(to: offset)
         }
     }
 

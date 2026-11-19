@@ -224,7 +224,7 @@ extension DocumentWindowController {
                                       selectionMode: .momentary,
                                       labels: nil,
                                       target: self,
-                                      action: #selector(navigateHistory(_:)))
+                                      action: #selector(navigationItemClicked(_:)))
         item.label = NSLocalizedString("Navigation", comment: "Navigation toolbar item label")
         item.paletteLabel = NSLocalizedString("Back and Forward", comment: "Navigation toolbar palette label")
         item.isNavigational = true
@@ -241,16 +241,11 @@ extension DocumentWindowController {
         return item
     }
 
-    @objc private func navigateHistory(_ sender: NSToolbarItemGroup) {
+    @objc private func navigationItemClicked(_ sender: NSToolbarItemGroup) {
         switch sender.selectedIndex {
-        case 0:
-            guard let entry = backHistory.last else { return }
-            present(url: entry.url, intent: .back)
-        case 1:
-            guard let entry = forwardHistory.last else { return }
-            present(url: entry.url, intent: .forward)
-        default:
-            break
+        case 0: navigateHistory(.back)
+        case 1: navigateHistory(.forward)
+        default: break
         }
     }
 

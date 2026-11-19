@@ -1290,6 +1290,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         let goTitle = L("Go")
         let menu = NSMenu(title: goTitle)
 
+        menu.addItem(makeItem("Back",
+                              action: #selector(DocumentWindowController.navigateBack(_:)),
+                              keyEquivalent: "[",
+                              modifiers: .command,
+                              symbol: "chevron.backward"))
+        menu.addItem(makeItem("Forward",
+                              action: #selector(DocumentWindowController.navigateForward(_:)),
+                              keyEquivalent: "]",
+                              modifiers: .command,
+                              symbol: "chevron.forward"))
+
+        menu.addItem(.separator())
+
         menu.addItem(makeItem("Up",
                               action: #selector(NSResponder.scrollLineUp(_:)),
                               keyEquivalent: arrow(NSUpArrowFunctionKey),
