@@ -52,7 +52,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTo
     var currentMarkdown: String?
     var history = NavigationHistory()
     weak var navigationItem: NSToolbarItemGroup?
-    private var mouseNavigationMonitor: Any?
+    private var navigationInputMonitor: Any?
     private var fileWatcher: FileWatcher?
     private let fullscreenToolbarTheme = FullscreenToolbarTheme()
     var isInspectorToggleSelected = false
@@ -243,7 +243,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTo
             self?.navigateToAnchor(fragment)
         }
         documentWindow.contentViewController = split
-        installMouseNavigationMonitor()
+        installNavigationInputMonitor()
         if let updates = appDelegate?.updaterController.model, updates.phase != .idle {
             split.installUpdatePill(updates)
         }
@@ -409,9 +409,9 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTo
         fileWatcher?.cancel()
         fileWatcher = nil
         themesPopoverEscapeMonitor.stop()
-        if let mouseNavigationMonitor {
-            NSEvent.removeMonitor(mouseNavigationMonitor)
-            self.mouseNavigationMonitor = nil
+        if let navigationInputMonitor {
+            NSEvent.removeMonitor(navigationInputMonitor)
+            self.navigationInputMonitor = nil
         }
         stopAutoSaveTimer()
         autoSaveFeedbackResetWork?.cancel()
@@ -689,26 +689,51 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTo
         mainSplit?.scrollPreview(toHistoryPosition: position)
     }
 
-    /// Side buttons on a mouse (buttons 4 and 5) step through history, as
-    /// in browsers. Both halves of the click are swallowed so the page never
-    /// sees a press without its release; the step happens on release.
-    private func installMouseNavigationMonitor() {
-        mouseNavigationMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.otherMouseDown, .otherMouseUp]
+    /// Side buttons on a mouse (buttons 4 and 5) and ⌘← / ⌘→ step through
+    /// history, as in browsers. Both halves of a click are swallowed so the
+    /// page never sees a press without its release; the step happens on
+    /// release. The arrows are left alone wherever they move a text cursor
+    /// (the editor, the search and find fields), which is also why they are
+    /// not the Go menu's key equivalents: a menu shortcut would win over
+    /// every text view in the window.
+    private func installNavigationInputMonitor() {
+        navigationInputMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.otherMouseDown, .otherMouseUp, .keyDown]
         ) { [weak self] event in
-            let intent: NavigationIntent
-            switch event.buttonNumber {
-            case 3: intent = .back
-            case 4: intent = .forward
-            default: return event
-            }
-            let isRelease = event.type == .otherMouseUp
+            guard let intent = Self.navigationIntent(for: event) else { return event }
             let handled = MainActor.assumeIsolated { () -> Bool in
                 guard let self, event.window === self.window else { return false }
-                if isRelease { self.navigateHistory(intent) }
+                if event.type == .keyDown {
+                    guard !self.isEditing, !(self.window?.firstResponder is NSText) else { return false }
+                    self.navigateHistory(intent)
+                } else if event.type == .otherMouseUp {
+                    self.navigateHistory(intent)
+                }
                 return true
             }
             return handled ? nil : event
+        }
+    }
+
+    private static func navigationIntent(for event: NSEvent) -> NavigationIntent? {
+        switch event.type {
+        case .otherMouseDown, .otherMouseUp:
+            switch event.buttonNumber {
+            case 3: return .back
+            case 4: return .forward
+            default: return nil
+            }
+        case .keyDown:
+            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                .subtracting([.numericPad, .function])
+            guard modifiers == .command else { return nil }
+            switch event.keyCode {
+            case 123: return .back      // left arrow
+            case 124: return .forward   // right arrow
+            default: return nil
+            }
+        default:
+            return nil
         }
     }
 
