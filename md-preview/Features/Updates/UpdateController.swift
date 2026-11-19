@@ -38,6 +38,9 @@ final class UpdateController {
             return playDemo(demo)
         }
         #endif
+        // A build with no SUFeedURL (a private fork) never updates. Sparkle
+        // would otherwise fail to start and report it on every launch.
+        guard Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") != nil else { return }
         do {
             try updater.start()
         } catch {
