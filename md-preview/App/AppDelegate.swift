@@ -174,7 +174,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
         installViewMenuItemIcons()
         hasFinishedLaunching = true
         if !didReceiveOpenURLsDuringLaunch && !launchedAsLoginItem {
-            scheduleDocumentPrompt(requiresNoDocuments: true)
+            scheduleDocumentPrompt(requiresNoDocuments: true, reopensLastDocument: true)
         }
         // Nothing below is visible in the first frame. A document opened
         // from Finder arrives before this callback, so by now its window is
@@ -848,7 +848,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
             .first
     }
 
-    private func scheduleDocumentPrompt(requiresNoDocuments: Bool = false) {
+    /// `reopensLastDocument` opens the most recent document instead of the
+    /// open panel when there is one; the panel still shows when there is
+    /// none, or when it fails to open.
+    private func scheduleDocumentPrompt(requiresNoDocuments: Bool = false,
+                                        reopensLastDocument: Bool = false) {
         guard !isOpenPanelVisible,
               !isDocumentPromptScheduled else { return }
 
@@ -861,7 +865,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenu
             self.isDocumentPromptScheduled = false
             guard !requiresNoDocuments || NSDocumentController.shared.documents.isEmpty else { return }
             NSApp.activate(ignoringOtherApps: true)
-            NSDocumentController.shared.openDocument(nil)
+            if reopensLastDocument, let url = Self.lastOpenedDocumentURL() {
+                self.openDocument(at: url)
+            } else {
+                NSDocumentController.shared.openDocument(nil)
+            }
+        }
+    }
+
+    /// Release notes and received shares are copies the app keeps for
+    /// itself, not documents the reader chose.
+    private static func lastOpenedDocumentURL() -> URL? {
+        NSDocumentController.shared.recentDocumentURLs.first { url in
+            !ReleaseNotes.isCachedCopy(url) && !ShareLinkOpener.isReceivedCopy(url)
+                && FileManager.default.fileExists(atPath: url.path)
         }
     }
 
