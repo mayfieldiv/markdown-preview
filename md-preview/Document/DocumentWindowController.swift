@@ -48,19 +48,9 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTo
         case failed
     }
 
-    /// A place the reader left: a different file, or another spot in the same
-    /// file after following an in-document link.
-    struct HistoryEntry {
-        let url: URL
-        /// Scroll offset in CSS pixels when the user navigated away;
-        /// restored on back/forward.
-        let scrollPosition: CGFloat
-    }
-
     var currentFileURL: URL?
     var currentMarkdown: String?
-    var backHistory: [HistoryEntry] = []
-    var forwardHistory: [HistoryEntry] = []
+    var history = NavigationHistory()
     weak var navigationItem: NSToolbarItemGroup?
     private var mouseNavigationMonitor: Any?
     private var fileWatcher: FileWatcher?
@@ -641,28 +631,21 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTo
     /// offset. Returns the position to restore for back/forward, nil otherwise.
     private func commitNavigation(to url: URL, intent: NavigationIntent) -> CGFloat? {
         guard let currentFileURL else { return nil }
-        let departed = HistoryEntry(
+        let departed = NavigationHistory.Entry(
             url: currentFileURL.standardizedFileURL,
             scrollPosition: mainSplit?.previewHistoryScrollPosition ?? 0
         )
         defer { updateNavigationItem() }
         switch intent {
         case .normal:
-            Self.appendHistory(departed, to: &backHistory)
-            forwardHistory.removeAll()
+            history.leave(departed)
             return nil
         case .back:
-            guard let target = backHistory.last,
-                  target.url == url.standardizedFileURL else { return nil }
-            backHistory.removeLast()
-            Self.appendHistory(departed, to: &forwardHistory)
-            return target.scrollPosition
+            guard history.nextBack?.url == url.standardizedFileURL else { return nil }
+            return history.goBack(from: departed)?.scrollPosition
         case .forward:
-            guard let target = forwardHistory.last,
-                  target.url == url.standardizedFileURL else { return nil }
-            forwardHistory.removeLast()
-            Self.appendHistory(departed, to: &backHistory)
-            return target.scrollPosition
+            guard history.nextForward?.url == url.standardizedFileURL else { return nil }
+            return history.goForward(from: departed)?.scrollPosition
         }
     }
 
@@ -671,11 +654,10 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTo
     /// records nothing: a Back that changes nothing on screen reads as broken.
     func navigateToAnchor(_ fragment: String) {
         guard let url = currentFileURL?.standardizedFileURL, let split = mainSplit else { return }
-        let departed = HistoryEntry(url: url, scrollPosition: split.previewHistoryScrollPosition)
+        let departed = NavigationHistory.Entry(url: url, scrollPosition: split.previewHistoryScrollPosition)
         split.scrollToAnchor(fragment) { [weak self] moved in
             guard let self, moved, self.currentFileURL?.standardizedFileURL == url else { return }
-            Self.appendHistory(departed, to: &self.backHistory)
-            self.forwardHistory.removeAll()
+            self.history.leave(departed)
             self.updateNavigationItem()
         }
     }
@@ -686,11 +668,11 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTo
     @objc func navigateForward(_ sender: Any?) { navigateHistory(.forward) }
 
     func navigateHistory(_ intent: NavigationIntent) {
-        let target: HistoryEntry?
+        let target: NavigationHistory.Entry?
         switch intent {
         case .normal: return
-        case .back: target = backHistory.last
-        case .forward: target = forwardHistory.last
+        case .back: target = history.nextBack
+        case .forward: target = history.nextForward
         }
         guard let target else { return }
         guard target.url == currentFileURL?.standardizedFileURL else {
@@ -730,27 +712,6 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTo
         }
     }
 
-    /// History entries name files by path; a rename would leave the open
-    /// document's own entries pointing at a file that no longer exists.
-    private func rewriteHistory(from oldURL: URL, to newURL: URL) {
-        let old = oldURL.standardizedFileURL
-        let new = newURL.standardizedFileURL
-        let rewrite = { (entry: HistoryEntry) in
-            entry.url == old ? HistoryEntry(url: new, scrollPosition: entry.scrollPosition) : entry
-        }
-        backHistory = backHistory.map(rewrite)
-        forwardHistory = forwardHistory.map(rewrite)
-    }
-
-    private static func appendHistory(_ entry: HistoryEntry, to history: inout [HistoryEntry]) {
-        if let last = history.last, last.url == entry.url,
-           abs(last.scrollPosition - entry.scrollPosition) < 1 {
-            history[history.count - 1] = entry
-        } else {
-            history.append(entry)
-        }
-    }
-
     static func fileURLWithoutFragment(_ url: URL) -> URL {
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               components.fragment != nil else { return url }
@@ -781,7 +742,9 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTo
     /// re-rendering the WebView, since the markdown content didn't change.
     func handleRename(to newURL: URL) {
         guard let oldURL = currentFileURL else { return }
-        rewriteHistory(from: oldURL, to: newURL)
+        // History names files by path; the open file's own entries would
+        // otherwise point at a file that no longer exists.
+        history.replaceURL(oldURL.standardizedFileURL, with: newURL.standardizedFileURL)
         currentFileURL = newURL
         markdownDocument?.replaceFileURL(newURL)
         documentWindow.title = ReleaseNotes.displayName(for: newURL)

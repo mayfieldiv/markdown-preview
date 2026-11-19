@@ -255,11 +255,13 @@ extension DocumentWindowController {
     }
 
     private func applyNavigationState(to item: NSToolbarItemGroup) {
-        let hasHistory = !backHistory.isEmpty || !forwardHistory.isEmpty
+        let canGoBack = history.nextBack != nil
+        let canGoForward = history.nextForward != nil
+        let hasHistory = canGoBack || canGoForward
         item.isHidden = !hasHistory
         item.isEnabled = hasHistory
-        item.subitems.first?.isEnabled = !backHistory.isEmpty
-        item.subitems.last?.isEnabled = !forwardHistory.isEmpty
+        item.subitems.first?.isEnabled = canGoBack
+        item.subitems.last?.isEnabled = canGoForward
     }
 
     /// A toggle as a plain NSButton hosted in a regular NSToolbarItem. On

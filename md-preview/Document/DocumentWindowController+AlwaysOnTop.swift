@@ -66,10 +66,10 @@ extension DocumentWindowController {
             return projectRootURL != nil
         }
         if menuItem.action == #selector(navigateBack(_:)) {
-            return !backHistory.isEmpty
+            return history.nextBack != nil
         }
         if menuItem.action == #selector(navigateForward(_:)) {
-            return !forwardHistory.isEmpty
+            return history.nextForward != nil
         }
         if menuItem.action == #selector(toggleAlwaysOnTop(_:)) {
             menuItem.state = isAlwaysOnTop ? .on : .off
